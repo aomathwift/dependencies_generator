@@ -1,0 +1,103 @@
+#!/usr/bin/env ruby
+require "fileutils"
+require 'json'
+require 'erb'
+
+TARGET_NAME = ARGV[0]
+DATA_DIR = File.join("#{TARGET_NAME}.doccarchive", 'data', 'documentation')
+APP_DIR = File.join(DATA_DIR, TARGET_NAME.downcase)
+TEMPLATE_DIR = 'templates'
+DESTINATION_DIR = File.join('Result', TARGET_NAME, 'Dependency')
+OUTPUT_DIR = File.join('Images')
+
+def resolve(file_name)
+    File.open("#{APP_DIR}/#{file_name}") do |file|
+        contents = JSON.parse(file.read)
+        name = contents.dig('metadata', 'title')
+        kind = contents.dig('metadata', 'symbolKind')
+        available_kinds = %w(class protocol struct)
+        unless available_kinds.include?(kind)
+            return
+        end
+        @definitions = []
+        @definitions << "#{kind} #{name}"
+        relationships_sections = contents.dig('relationshipsSections')
+        return if relationships_sections.nil?
+        @relationships = []
+        relationships_sections.each do |relationship|
+            relationship_type = relationship.dig('type')
+            if relationship_type == 'conformingTypes'
+                relationship['identifiers'].each do |id|
+                    id_name = dependent_component_name(id)
+                    next if id_name.empty?
+                    @relationships << "#{name} <|.. #{id_name}"
+                end
+            elsif relationship_type == 'conformsTo'
+                relationship['identifiers'].each do |id|
+                    id_name = dependent_component_name(id)
+                    next if id_name.empty?
+                    add_new_def = true
+                    @definitions.each do |definition|
+                        if definition.include?(id_name)
+                            add_new_def = false
+                        end
+                    end
+                    if add_new_def
+                        @definitions << "protocol #{id_name}"
+                    end
+                    @relationships << "#{id_name} <|.. #{name}"
+                end
+            elsif relationship_type == 'inheritsFrom'
+                relationship['identifiers'].each do |id|
+                    id_name = dependent_component_name(id)
+                    next if id_name.empty?
+                    add_new_def = true
+                    @definitions.each do |definition|
+                        if definition.include?(id_name)
+                            add_new_def = false
+                        end
+                    end
+                    if add_new_def
+                        @definitions << "class #{id_name}"
+                    end
+                    @relationships << "#{id_name} <|-- #{name}"
+                end
+            else
+                return
+            end
+        end
+        template = File.open(File.join(TEMPLATE_DIR, 'dependency.pu.erb')).read
+        result = ERB.new(template, trim_mode: '-').result(binding)
+        FileUtils.mkdir_p(DESTINATION_DIR)
+        file = File.open("#{DESTINATION_DIR}/#{name}_dependency.pu", 'w') do |file|
+            file.write(result)
+        end
+    end
+end
+
+def dependent_component_name(id)
+    id_contents = id.split('/').last(2)
+    id_name = id_contents.last
+    component_name = ''
+    if id_contents.first.include?('CookpadMartEC')
+        component_name = id_contents.last
+    elsif id_name.start_with?('objc(pl)')
+        component_name = id_name.delete_prefix('objc(pl)')
+    elsif id_name.start_with?('objc(cs)')
+        component_name = id_name.delete_prefix('objc(cs)')
+    elsif id_name =~ /s[0-9]+(\w+)P/
+        component_name = id_name.match(/s[0-9]+(\w+)P/)[1]
+    elsif id_name =~ /[0-9]+(\w+)P/
+        str = id_name.match(/[0-9]+(\w+)P/)[1]
+        component_name = str.gsub(/[0-9]+/, '/').split('/').last
+    end
+    component_name
+end
+
+
+Dir.foreach(APP_DIR) do |item|
+    if item.end_with?(".json")
+        resolve(item)
+    end
+end
+system("java -jar plantuml.jar #{DESTINATION_DIR} -o #{OUTPUT_DIR} -charset UTF-8")

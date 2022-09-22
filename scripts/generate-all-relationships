@@ -1,0 +1,82 @@
+#!/usr/bin/env ruby
+require "fileutils"
+require 'json'
+
+TARGET_NAME = ARGV[0]
+DATA_DIR = File.join("#{TARGET_NAME}.doccarchive", 'data', 'documentation')
+APP_DIR = File.join(DATA_DIR, TARGET_NAME.downcase)
+DESTINATION_ROOT = File.join('Result', TARGET_NAME)
+
+def resolve(file_name)
+    result = ""
+    File.open("#{APP_DIR}/#{file_name}") do |file|
+        contents = JSON.parse(file.read)
+        name = contents['metadata']['title']
+        role = contents['metadata']['roleHeading']
+        result << "## 🍎#{role}: #{name}\n---\n"
+        relationships_sections = contents.dig('relationshipsSections')
+        if relationships_sections.nil?
+            result << "No relationship\n---\n"
+        else
+            relationships_sections.each do |relationship|
+                relationship_type = relationship['type']
+                if relationship_type == 'conformingTypes'
+                    result << "Following types are conforming to #{role} #{name}:"
+                    relationship['identifiers'].each do |id|
+                        id_name = dependent_component_name(id)
+                        next if id_name.empty?
+                        result << id_name
+                        result << "\n\n"
+                    end
+                    result << "\n---\n"
+                elsif relationship_type == 'conformsTo'
+                    relationship['identifiers'].each do |id|
+                        id_name = dependent_component_name(id)
+                        next if id_name.empty?
+                        result << "Conforms to protocol: #{id_name}\n\n"
+                    end
+                    result << "\n---\n"
+                elsif relationship_type == 'inheritsFrom'
+                    relationship['identifiers'].each do |id|
+                        id_name = dependent_component_name(id)
+                        next if id_name.empty?
+                        result << "Inherits from class #{id_name}\n\n"
+                    end
+                    result << "\n---\n"
+                else
+                    result << "Unexpected relationships contents\n---\n"
+                end
+            end
+        end
+    end
+    result
+end
+
+def dependent_component_name(id)
+    id_contents = id.split('/').last(2)
+    id_name = id_contents.last
+    component_name = ''
+    if id_contents.first.include?('CookpadMartEC')
+        component_name = id_contents.last
+    elsif id_name.start_with?('objc(pl)')
+        component_name = id_name.delete_prefix('objc(pl)')
+    elsif id_name.start_with?('objc(cs)')
+        component_name = id_name.delete_prefix('objc(cs)')
+    elsif id_name =~ /s[0-9]+(\w+)P/
+        component_name = id_name.match(/s[0-9]+(\w+)P/)[1]
+    elsif id_name =~ /[0-9]+(\w+)P/
+        str = id_name.match(/[0-9]+(\w+)P/)[1]
+        component_name = str.gsub(/[0-9]+/, '/').split('/').last
+    end
+    component_name
+end
+
+FileUtils.mkdir_p(DESTINATION_ROOT)
+total_result = "# 🤖Dependencies\n\n"
+Dir.foreach(APP_DIR) do |item|
+    if item.end_with?(".json")
+        total_result << resolve(item)
+        total_result << "\n---\n"
+    end
+end
+File.open("#{DESTINATION_ROOT}/dependencies.md", 'w').write(total_result)
